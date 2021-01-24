@@ -1,49 +1,51 @@
 # coding: utf-8
-import sys
-from cobra.data.kline import get_kline
-sys.path.insert(0, '.')
-sys.path.insert(0, '..')
-import chan
-from chan import KlineAnalyze
-from chan.analyze import is_bei_chi
+import os
+from czsc.analyze import *
+from czsc.utils.echarts_plot import kline_pro
 
-print(chan.__version__)
+cur_path = os.path.split(os.path.realpath(__file__))[0]
+# cur_path = r"D:\git_repo\offline\dealer\test\czsc"
 
+def test_find_bi():
+    file_kline = os.path.join(cur_path, "data/000001.SH_D.csv")
+    kline = pd.read_csv(file_kline, encoding="utf-8")
+    kline.loc[:, "dt"] = pd.to_datetime(kline.dt)
+    bars = [RawBar(symbol=row['symbol'], open=row['open'], dt=row['dt'],
+                   close=row['close'], high=row['high'], low=row['low'], vol=row['vol'])
+            for _, row in kline.iterrows()]
 
-def test_bei_chi():
-    df = get_kline(ts_code="000001.SH", end_dt="2020-04-28 15:00:00", freq='D', asset='I')
-    ka = KlineAnalyze(df)
+    # 去除包含关系
+    bars1 = []
+    for bar in bars:
+        if len(bars1) < 2:
+            bars1.append(NewBar(symbol=bar.symbol, dt=bar.dt, open=bar.open,
+                                close=bar.close, high=bar.high, low=bar.low,
+                                vol=bar.vol, elements=[bar]))
+        else:
+            k1, k2 = bars1[-2:]
+            has_include, k3 = remove_include(k1, k2, bar)
+            if has_include:
+                bars1[-1] = k3
+            else:
+                bars1.append(k3)
 
-    # 线段背驰
-    zs1 = {"start_dt": '2018-07-26 15:00:00', "end_dt": '2018-10-19 15:00:00', "direction": "down"}
-    zs2 = {"start_dt": '2018-01-29 15:00:00', "end_dt": '2018-07-06 15:00:00', "direction": "down"}
-    assert is_bei_chi(ka, zs1, zs2, mode='xd', adjust=0.9)
+    fxs = []
+    for i in range(1, len(bars1)-1):
+        fx = check_fx(bars1[i-1], bars1[i], bars1[i+1])
+        if isinstance(fx, FX):
+            fxs.append(fx)
 
-    zs1 = {"start_dt": '2013-12-10 15:00:00', "end_dt": '2014-01-20 15:00:00', "direction": "down"}
-    zs2 = {"start_dt": '2013-09-12 15:00:00', "end_dt": '2013-11-14 15:00:00', "direction": "down"}
-    assert not is_bei_chi(ka, zs1, zs2, mode='xd', adjust=0.9)
+def test_ka_update():
+    file_kline = os.path.join(cur_path, "data/000001.SH_D.csv")
+    kline = pd.read_csv(file_kline, encoding="utf-8")
+    kline.loc[:, "dt"] = pd.to_datetime(kline.dt)
+    bars = [RawBar(symbol=row['symbol'], open=row['open'], dt=row['dt'],
+                   close=row['close'], high=row['high'], low=row['low'], vol=row['vol'])
+            for _, row in kline.iterrows()]
+    c = CZSC(bars, freq="日线", max_count=1000)
 
-    # 笔背驰
-    zs1 = {"start_dt": '2019-05-17 15:00:00', "end_dt": '2019-06-10 15:00:00'}
-    zs2 = {"start_dt": '2019-04-08 15:00:00', "end_dt": '2019-05-10 15:00:00'}
-    assert is_bei_chi(ka, zs1, zs2, mode='bi', adjust=0.9)
-
-    zs1 = {"start_dt": '2018-09-28 15:00:00', "end_dt": '2018-10-19 15:00:00'}
-    zs2 = {"start_dt": '2018-08-28 15:00:00', "end_dt": '2018-09-12 15:00:00'}
-    assert not is_bei_chi(ka, zs1, zs2, mode='bi', adjust=0.9)
-
-
-def test_kline_analyze():
-    df = get_kline(ts_code="300008.SZ", end_dt="2020-03-23 15:00:00", freq='30min', asset='E')
-    ka = KlineAnalyze(df)
-
-    # 测试识别结果
-    assert ka.bi[-1]['fx_mark'] == 'g'
-    assert ka.xd[-1]['fx_mark'] == 'g'
-
-    # 测试背驰识别
-    assert not ka.bi_bei_chi()
-    assert not ka.xd_bei_chi()
-    print(ka.zs[-2])
-
-
+    kline = [x.__dict__ for x in c.bars_raw]
+    bi = [{'dt': x.fx_a.dt, "bi": x.fx_a.fx} for x in c.bi_list] + \
+         [{'dt': c.bi_list[-1].fx_b.dt, "bi": c.bi_list[-1].fx_b.fx}]
+    chart = kline_pro(kline, bi=bi, title="{} - {}".format(c.symbol, c.freq))
+    chart.render("x.html")
