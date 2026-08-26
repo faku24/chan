@@ -1,0 +1,26 @@
+{
+    "python.defaultInterpreterPath": ".venv/Scripts/python.exe",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.indexing": true,
+    "python.analysis.typeCheckingMode": "off",
+    "python.analysis.autoSearchPaths": true,
+    "python.analysis.extraPaths": [
+        ".",
+        "czsc"
+    ],
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        ".pytest_cache": true,
+        ".mypy_cache": true,
+        "**/node_modules": true
+    },
+    "python.testing.pytestEnabled": true,
+    "python.testing.pytestArgs": [
+        "test",
+        "-s",
+        "--log-cli-level=INFO"
+    ],
+    "python.testing.unittestEnabled": false,
+    "liveServer.settings.port": 5502
+}

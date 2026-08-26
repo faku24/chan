@@ -1,0 +1,27 @@
+[package]
+name                    = "czsc-ta"
+version.workspace       = true
+edition.workspace       = true
+license.workspace       = true
+repository.workspace    = true
+homepage.workspace      = true
+documentation.workspace = true
+authors.workspace       = true
+keywords.workspace      = true
+categories.workspace    = true
+readme                  = "README.md"
+description             = "Technical analysis operators of the czsc framework (EMA, SMA, rolling_rank, ultimate_smoother, ...) with optional numpy interop. Standalone-friendly; otherwise prefer the `czsc` facade."
+
+[lib]
+name = "czsc_ta"
+path = "src/lib.rs"
+
+[dependencies]
+numpy         = { workspace = true, optional = true }
+ordered-float = { version = "5.3", optional = true }
+pyo3          = { workspace = true, optional = true, features = ["chrono"] }
+pyo3-stub-gen = { version = "0.22", optional = true }
+
+[features]
+python     = ["pyo3", "pyo3-stub-gen"]
+rust-numpy = ["python", "numpy", "ordered-float"]

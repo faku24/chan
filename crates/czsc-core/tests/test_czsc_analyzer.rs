@@ -1,0 +1,188 @@
+//! Phase D.A — RED test：CZSC 分析器从 RawBar 流构造，
+//! 暴露 bars_raw / bars_ubi / bi_list / fx_list，并能正确处理
+//! 增量的 update_bar 输入。
+
+use std::sync::Arc;
+
+use chrono::{TimeZone, Utc};
+use czsc_core::analyze::CZSC;
+use czsc_core::objects::bar::{RawBar, RawBarBuilder};
+use czsc_core::objects::freq::Freq;
+
+fn rb(ts: i64, open: f64, close: f64, high: f64, low: f64) -> RawBar {
+    RawBarBuilder::default()
+        .symbol(Arc::<str>::from("000001"))
+        .dt(Utc.timestamp_opt(ts, 0).unwrap())
+        .freq(Freq::F30)
+        .id(0)
+        .open(open)
+        .close(close)
+        .high(high)
+        .low(low)
+        .vol(1000.0_f64)
+        .amount(1_000_000.0_f64)
+        .build()
+        .unwrap()
+}
+
+fn synthetic_zigzag(n: usize) -> Vec<RawBar> {
+    // 构造一个类正弦波形的 zigzag，让分析器能产出 fxs/bis。
+    (0..n)
+        .map(|i| {
+            let phase = (i as f64) * 0.7;
+            let mid = 100.0 + 5.0 * phase.sin();
+            let half = 1.0 + 0.5 * phase.cos().abs();
+            rb(
+                1_700_000_000 + (i as i64) * 1800,
+                mid - 0.2,
+                mid + 0.2,
+                mid + half,
+                mid - half,
+            )
+        })
+        .collect()
+}
+
+fn seeded_bars(seed: u64, n: usize) -> Vec<RawBar> {
+    let mut state = seed;
+    let mut price = 100.0;
+    (0..n)
+        .map(|i| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let delta = ((state >> 32) as i32 % 200) as f64 / 100.0;
+            price += delta;
+            let spread = 0.5 + ((state >> 48) % 100) as f64 / 100.0;
+            rb(
+                1_700_000_000 + (i as i64) * 1800,
+                price - 0.1,
+                price + 0.1,
+                price + spread,
+                price - spread,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn new_populates_symbol_and_freq() {
+    let bars = synthetic_zigzag(50);
+    let c = CZSC::new(bars, 50, 6);
+    assert_eq!(&*c.symbol, "000001");
+    assert_eq!(c.freq, Freq::F30);
+    assert_eq!(c.max_bi_num, 50);
+}
+
+#[test]
+fn new_consumes_all_bars_and_builds_ubi() {
+    let bars = synthetic_zigzag(40);
+    let c = CZSC::new(bars, 50, 6);
+    // bars_ubi 是合并后 bar（NewBar）序列；对于 40 根原始 zigzag
+    // bar，我们期望合并后的序列非空
+    assert!(!c.bars_ubi.is_empty(), "bars_ubi should not be empty");
+}
+
+#[test]
+fn fx_and_bi_lists_are_consistent_with_zigzag() {
+    let bars = synthetic_zigzag(60);
+    let c = CZSC::new(bars, 50, 6);
+    let fxs = c.get_fx_list();
+    // 60 根 zigzag bar 的正弦波形必须产出至少 2 个分型（顶底交替）
+    assert!(
+        fxs.len() >= 2,
+        "60 根 zigzag 应至少产出 2 个分型，实际 {}",
+        fxs.len()
+    );
+    assert!(fxs.len() <= 60, "分型数量不得超过 bar 数");
+    // 有分型则必然有笔；max_bi_num=50 为上界
+    assert!(
+        !c.bi_list.is_empty(),
+        "有分型时应至少识别出 1 笔，实际 {}",
+        c.bi_list.len()
+    );
+    assert!(c.bi_list.len() <= 50, "笔数量不得超过 max_bi_num=50");
+}
+
+#[test]
+fn update_bar_appends_incrementally() {
+    let bars = synthetic_zigzag(30);
+    let mut c = CZSC::new(bars, 50, 6);
+    let extra = rb(1_700_000_000 + 30 * 1800, 102.0, 103.0, 104.0, 101.0);
+    c.update_bar(extra);
+    assert_eq!(c.freq, Freq::F30);
+    // bars_raw 单调增长（不计分析器内部的裁剪）
+    assert!(
+        c.bars_raw
+            .iter()
+            .any(|b| b.dt == Utc.timestamp_opt(1_700_000_000 + 30 * 1800, 0).unwrap())
+    );
+}
+
+#[test]
+fn analyzer_clones_independently() {
+    let bars = synthetic_zigzag(20);
+    let c = CZSC::new(bars, 50, 6);
+    let d = c.clone();
+    assert_eq!(d.bi_list.len(), c.bi_list.len());
+    assert_eq!(&*d.symbol, &*c.symbol);
+}
+
+#[test]
+fn fx_list_deduplicates_shared_endpoint_between_finished_bis() {
+    let c = CZSC::new(seeded_bars(1, 80), 50, 6);
+    assert!(c.bi_list.len() >= 2);
+
+    let shared = c.bi_list[0].fxs.last().unwrap();
+    assert_eq!(shared, &c.bi_list[1].fxs[1]);
+
+    let fxs = c.get_fx_list();
+    assert_eq!(fxs.iter().filter(|fx| fx.dt == shared.dt).count(), 1);
+    assert_eq!(fxs.iter().find(|fx| fx.dt == shared.dt).unwrap(), shared);
+    assert!(fxs.windows(2).all(|pair| pair[0].dt < pair[1].dt));
+    assert!(fxs.windows(2).all(|pair| pair[0].mark != pair[1].mark));
+}
+
+#[test]
+fn fx_list_deduplicates_bi_to_ubi_boundary_and_keeps_later_ubi_fx() {
+    let c = CZSC::new(seeded_bars(1, 26), 50, 6);
+    let last_bi_fx = c.bi_list.last().unwrap().fxs.last().unwrap();
+    let ubi_fxs = c.get_ubi_fxs().unwrap();
+    assert_eq!(ubi_fxs.first().unwrap().dt, last_bi_fx.dt);
+    let later_ubi_fx = ubi_fxs.iter().find(|fx| fx.dt > last_bi_fx.dt).unwrap();
+
+    let fxs = c.get_fx_list();
+    assert_eq!(fxs.iter().filter(|fx| fx.dt == last_bi_fx.dt).count(), 1);
+    assert!(fxs.iter().any(|fx| fx == later_ubi_fx));
+    assert_eq!(fxs.last().unwrap(), later_ubi_fx);
+    assert!(fxs.windows(2).all(|pair| pair[0].dt < pair[1].dt));
+}
+
+/// min_bi_len 必须真正作用于成笔逻辑：更大的阈值会过滤掉更短的笔，
+/// 因此 bi_list 数量应单调不增。这是 issue #328 的回归保护——
+/// 之前该值在 check_bi 里被硬编码为 6，外部传入完全失效。
+#[test]
+fn min_bi_len_affects_bi_count() {
+    let bars = synthetic_zigzag(60);
+    let small = CZSC::new(bars.clone(), 50, 6);
+    let large = CZSC::new(bars, 50, 11);
+    assert!(
+        large.bi_list.len() <= small.bi_list.len(),
+        "min_bi_len=11 不应比 min_bi_len=6 产出更多笔：{} > {}",
+        large.bi_list.len(),
+        small.bi_list.len()
+    );
+    // 所有成笔长度必须 >= 其 min_bi_len 阈值
+    for bi in &small.bi_list {
+        assert!(
+            bi.bars.len() >= 6,
+            "短阈值下出现 <6 的笔：{}",
+            bi.bars.len()
+        );
+    }
+    for bi in &large.bi_list {
+        assert!(
+            bi.bars.len() >= 11,
+            "长阈值下出现 <11 的笔：{}",
+            bi.bars.len()
+        );
+    }
+}

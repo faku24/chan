@@ -1,0 +1,61 @@
+[workspace]
+resolver = "2"
+members  = ["crates/*"]
+
+[workspace.package]
+version       = "1.0.1"
+edition       = "2024"
+license       = "MIT"
+repository    = "https://github.com/waditu/czsc"
+homepage      = "https://github.com/waditu/czsc"
+documentation = "https://docs.rs/czsc-core"
+authors       = ["zengbin93 <zeng_bin8888@163.com>"]
+# crates.io 限制 keywords ≤ 5、每个 ≤ 20 chars，且只能字母数字-_，所以
+# 中文「缠论/技术分析」等只能放 description，关键词留 ASCII。
+keywords      = ["czsc", "quant", "technical-analysis", "trading", "finance"]
+# crates.io 上类目从 https://crates.io/category_slugs 选取，最多 5 个。
+categories    = ["finance", "mathematics", "science"]
+
+[workspace.dependencies]
+# 第三方依赖
+# 注：polars 暂停在 0.52.0——polars-arrow 0.53.x 给 chrono 加了 `<=0.4.41`
+# 的死锁约束，会与 pyo3-stub-gen 0.21+ 要求的 chrono `^0.4.44` 冲突，
+# 等 polars 上游放宽后再升 0.53.x。
+chrono        = { version = "0.4", features = ["serde"] }
+hashbrown     = "0.17"
+ordered-float = "5.3"
+polars        = { version = "0.52.0", features = [
+    "lazy", "serde", "strings", "concat_str", "pivot", "is_in",
+    "cum_agg", "abs", "ipc", "round_series", "dtype-datetime",
+    "temporal", "parquet", "timezones", "fmt", "partition_by",
+] }
+# Workspace-wide pyo3: declared without features so business crates'
+# unit tests can link against a real libpython resolved through
+# PYO3_PYTHON. The cdylib producer (`czsc-python`) layers on
+# `abi3-py310` + `extension-module` so the published wheel uses the
+# abi3 stable API and dynamically loads at Python startup time.
+pyo3          = { version = "0.28" }
+numpy         = "0.28"
+rayon         = "1"
+serde         = { version = "1", features = ["derive", "rc"] }
+
+# 工作区内部 crate —— path + version 双声明：
+#   - path：本地/CI 走相对路径，`cargo build --workspace` 直接拉源码
+#   - version：`cargo publish` 时按 version 解析 crates.io 上的依赖
+# 业务 crate 用 `{ workspace = true }` 引用，避免在每个 Cargo.toml
+# 重复维护版本号；workspace.package.version 升级一次，全部跟随。
+# 发布产物之间必须精确锁定同一版本，避免 Cargo 将 prerelease 解析为更高的 stable。
+# 版本 bump 时，由 release workflow 同步替换本段全部版本号。
+czsc               = { path = "crates/czsc",               version = "=1.0.1" }
+czsc-core          = { path = "crates/czsc-core",          version = "=1.0.1" }
+czsc-utils         = { path = "crates/czsc-utils",         version = "=1.0.1" }
+czsc-ta            = { path = "crates/czsc-ta",            version = "=1.0.1" }
+czsc-signals       = { path = "crates/czsc-signals",       version = "=1.0.1" }
+czsc-trader        = { path = "crates/czsc-trader",        version = "=1.0.1" }
+czsc-signal-macros = { path = "crates/czsc-signal-macros", version = "=1.0.1" }
+czsc-derive        = { path = "crates/czsc-derive",        version = "=1.0.1" }
+
+[profile.release]
+lto           = true
+opt-level     = 3
+codegen-units = 1

@@ -2,16 +2,18 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+*/docs/source/api
+*/gmcache
 .idea/
-*.csv
+manuscrips/
 *.xlsx
 *.html
 *.png
-
+*/.ipynb_checkpoints/
 # C extensions
 *.so
-
+*api/
+.spec-workflow/
 # Distribution / packaging
 .Python
 build/
@@ -19,17 +21,22 @@ develop-eggs/
 dist/
 downloads/
 eggs/
+diagrams/*
 .eggs/
 lib/
 lib64/
 parts/
+*.DS*
 sdist/
 var/
 wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+output*
 MANIFEST
+human.md
+.playwright-mcp/*
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
@@ -108,3 +115,21 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+.claude/settings.local.json
+
+# Test report artifacts
+*backtest_report*.html
+*backtest_report*.pdf
+test_auto_report.html
+
+# docs/examples 的运行产物（HTML 报告、parquet、Position JSON 等）
+docs/examples/_output/
+docs/examples/.DS_Store
+
+# auto-czsc-quant experiment artifacts
+scripts/auto-czsc-quant/results/
+
+# agent runtime artifacts (Multica / Claude Code) — not part of the library
+.multica/
+.agent_context/
+.claude/skills/

@@ -1,0 +1,49 @@
+[package]
+name                    = "czsc-trader"
+version.workspace       = true
+edition.workspace       = true
+license.workspace       = true
+repository.workspace    = true
+homepage.workspace      = true
+documentation.workspace = true
+authors.workspace       = true
+keywords.workspace      = true
+categories.workspace    = true
+readme                  = "README.md"
+description             = "Multi-strategy trading engine of the czsc framework (most users should depend on the `czsc` facade instead): signal compilation, CzscTrader/CzscSignals state machines, parameter optimization."
+
+[lib]
+name = "czsc_trader"
+path = "src/lib.rs"
+
+[dependencies]
+czsc-core     = { workspace = true }
+czsc-utils    = { workspace = true }
+czsc-signals  = { workspace = true }
+czsc-derive   = { workspace = true }
+
+anyhow        = "1"
+chrono        = { workspace = true, features = ["serde"] }
+hashbrown     = { workspace = true }
+hex           = "0.4"
+log           = "0.4"
+md5           = "0.8"
+polars        = { workspace = true, features = ["lazy", "ipc", "parquet"] }
+polars-plan   = { version = "0.52" }
+rayon         = { workspace = true }
+rmp-serde     = "1"
+serde         = { workspace = true }
+serde_json    = "1"
+sha2          = "0.11"
+strum         = "0.28"
+strum_macros  = "0.28"
+thiserror     = "2"
+tracing       = "0.1"
+arrayvec      = "0.7"
+csv           = "1"
+
+[features]
+python = ["czsc-core/python", "czsc-signals/python"]
+
+[dev-dependencies]
+tempfile      = "3"

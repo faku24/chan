@@ -1,5 +1,0 @@
-pyecharts
-tqdm
-pandas
-tushare
-git+git://github.com/zengbin93/cobra.git

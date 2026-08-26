@@ -1,0 +1,332 @@
+name: Code Quality
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  # security / dependency-check 改为 master push + 每周日夜间触发（见各 job 的 if 条件）。
+  # 这两个 job 单独都在 25-30 分钟级别，且每个 step 后接 `|| true` 不阻塞 merge，
+  # 留在 PR critical path 上只会把 wall time 拉满 runner 时长却不产生约束，所以移出。
+  schedule:
+    - cron: '0 19 * * 0'   # 周日 UTC 19:00 ≈ 周一北京时间 03:00
+
+jobs:
+  # ------------------------------------------------------------------
+  # 1) Rust per-crate tests — must pass before any Python work runs.
+  #
+  #    `cargo test --workspace` cannot link against libpython when the
+  #    pyo3 `extension-module` feature is enabled (see MIGRATION_NOTES
+  #    §3.1). We therefore run cargo test per crate, skipping crates
+  #    that pull in pyo3/extension-module (czsc-python, czsc-signals,
+  #    czsc-trader) — they're exercised end-to-end by the Python test
+  #    matrix below via maturin develop + pytest.
+  # ------------------------------------------------------------------
+  rust-tests:
+    name: Rust per-crate tests
+    runs-on: ubuntu-latest
+    env:
+      # 测试二进制只保留行号表，去掉完整 DWARF；可把 target/debug 从 ~10GB 压到 ~3GB，
+      # 避免 ubuntu-latest 14GB 根盘在 polars + tokio + rustls 全量依赖下被打爆。
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    steps:
+    - name: Free disk space on runner
+      # GitHub-hosted runner 默认占了 ~25GB 在 Android SDK / .NET / Haskell / CodeQL 等
+      # 工具链上，本 job 用不到。删掉它们给 polars 重型依赖链留出编译空间。
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: false
+        swap-storage: false
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
+    - name: cargo test (per-crate)
+      # 不预跑 `cargo build --workspace --release`：release profile 的产物
+      # 与下方 `cargo test`（debug profile）不共享 codegen 缓存，热身后 test
+      # 仍要全量重编一次，等于多花 5-10 分钟做无用功。直接进 test step。
+      run: |
+        set -e
+        # 注：原 error-support 已合并到 czsc-core::error_chain；
+        #     原 error-macros 重命名为 czsc-derive。
+        for crate in czsc-derive czsc-core czsc-utils czsc-ta czsc-signal-macros; do
+          echo "::group::cargo test -p $crate"
+          cargo test -p "$crate" --no-fail-fast
+          echo "::endgroup::"
+        done
+
+  # ------------------------------------------------------------------
+  # 1.1) `czsc/_native/__init__.pyi` 漂移检查
+  #
+  #      `crates/czsc-python/src/bin/stub_gen.rs` 通过 pyo3-stub-gen 0.22
+  #      把 Rust 端 `#[gen_stub_pyclass]` / `#[gen_stub_pyfunction]` /
+  #      `#[gen_stub_pymethods]` 的元信息渲染成 `czsc/_native/__init__.pyi`。
+  #      这个 stub 文件与 Rust 源码会双向漂移：
+  #
+  #      - 改了 `gen_stub_*` 装饰器但忘了重跑 stub_gen → stub 反映旧 API
+  #      - 手改了 stub 但 Rust 没改 → 下次重跑会把手改盖掉
+  #
+  #      本 job 的策略：在 CI 重新跑一次 stub_gen，再 `git diff --exit-code`
+  #      检查 `czsc/_native/__init__.pyi` 是否被改写，若变更则 PR 必须把新生成的 stub
+  #      也提交进来才能合入。
+  # ------------------------------------------------------------------
+  stub-drift:
+    name: czsc/_native/__init__.pyi drift check
+    runs-on: ubuntu-latest
+    needs: rust-tests
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
+    - name: Set up Python (any 3.10+ works for binding)
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Run stub_gen
+      run: |
+        export PYO3_PYTHON=$(which python3)
+        cargo run --bin stub_gen -p czsc-python \
+          --no-default-features --features stub-gen
+
+    - name: Assert czsc/_native/__init__.pyi is in sync with Rust source
+      run: |
+        if ! git diff --exit-code czsc/_native/__init__.pyi; then
+          echo "::error::czsc/_native/__init__.pyi 与 Rust 装饰器不一致 ——"
+          echo "请在本地运行："
+          echo "  PYO3_PYTHON=\$(uv run python -c 'import sys; print(sys.executable)') \\"
+          echo "    cargo run --bin stub_gen -p czsc-python \\"
+          echo "      --no-default-features --features stub-gen"
+          echo "并把更新后的 czsc/_native/__init__.pyi 一并 commit。"
+          exit 1
+        fi
+
+  # ------------------------------------------------------------------
+  # 2) Python test matrix — single abi3 wheel covers 3.10/3.11/3.12/3.13.
+  #     Each Python version installs the project (which triggers maturin
+  #     to build czsc._native against that interpreter), then runs pytest.
+  # ------------------------------------------------------------------
+  test:
+    name: Python tests (py${{ matrix.python-version }})
+    needs: rust-tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+      with:
+        version: "latest"
+
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxml2-dev libxslt-dev
+
+    - name: Install project dependencies (Python only)
+      run: |
+        # uv sync 装 Python 依赖到 .venv；czsc._native 还需要 maturin develop 单独构建。
+        uv sync --extra all
+
+    - name: Build czsc._native (maturin develop)
+      run: |
+        uv pip install maturin
+        uv run maturin develop --release
+
+    - name: Smoke-import czsc
+      run: |
+        uv run python -c "import czsc; print(f'CZSC version: {czsc.__version__}')"
+        uv run python -c "from czsc import CZSC, RawBar, Freq; print('core imports OK')"
+
+    - name: Run pytest
+      run: |
+        uv run pytest tests/ -v --cov=czsc --cov-report=xml --cov-report=term
+
+    - name: Upload coverage to Codecov
+      if: matrix.python-version == '3.11'
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+        token: ${{ secrets.CODECOV_TOKEN }}
+        slug: zengbin93/czsc
+
+  formatting:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+      with:
+        version: "latest"
+
+    - name: Check Python formatting with ruff
+      # ruff 是纯文本工具，不需要解析项目类型，直接 `uvx` 跑一份临时环境
+      # 即可——之前用 `uv sync --extra all` 装 plotly/tushare/ccxt 等几 GB
+      # runtime 重依赖，纯浪费（80%+ 的 wall time 在装无关包）。
+      run: |
+        uvx --from "ruff>=0.9.0" ruff format --check --diff czsc/ tests/
+
+    - name: Check Rust formatting with cargo fmt
+      run: |
+        rustup component add rustfmt
+        cargo fmt --all -- --check
+
+  linting:
+    name: Code Linting
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+      with:
+        version: "latest"
+
+    - name: Set up Python
+      run: uv python install 3.11
+
+    - name: Install dependencies
+      # 用 `uv sync` 而不是 `uv sync --extra all`：
+      #   - `[project.dependencies]` 装运行时依赖（basedpyright 需要解析这些 import）
+      #   - `[dependency-groups].dev` 默认装（含 ruff / basedpyright）
+      # 避开 `extra=all` 里的 test 临时包（talib-rs marker 各平台 wheel 不全，
+      # 经常触发额外 resolve）+ release 包（twine/build），lint 都用不到。
+      run: uv sync
+
+    - name: Lint Python with ruff
+      run: |
+        uv run ruff check czsc/ tests/
+
+    - name: Type-check Python with basedpyright
+      run: |
+        uv run basedpyright czsc/ || true
+
+    - name: Lint Rust with cargo clippy
+      run: |
+        cargo clippy --workspace --all-targets -- -D warnings
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: test
+    # 只在 master push 和 schedule 触发时跑：safety/bandit 每 step 都 `|| true` 不阻塞
+    # PR merge，放在 PR critical path 上只会把 wall time 拉到 25+ 分钟却不产生约束。
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+      with:
+        version: "latest"
+
+    - name: Set up Python
+      run: uv python install 3.11
+
+    - name: Install dependencies
+      run: uv sync
+
+    - name: Security audit with safety
+      run: |
+        uv add --dev safety
+        uv run safety check --json || true
+
+    - name: Check for security issues with bandit
+      run: |
+        uv add --dev bandit[toml]
+        uv run bandit -r czsc/ -f json -o bandit-report.json || true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+        retention-days: 7
+
+  dependency-check:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    needs: test
+    # 与 security 同款：每 step `|| true`，PR 上不阻塞、不约束，挪到 master + schedule。
+    if: github.event_name == 'push' || github.event_name == 'schedule'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v2
+      with:
+        version: "latest"
+
+    - name: Set up Python
+      run: uv python install 3.11
+
+    - name: Install dependencies
+      run: uv sync
+
+    - name: Check for outdated dependencies
+      run: |
+        uv tree --outdated || true
+
+    - name: Audit dependency licenses
+      run: |
+        uv add --dev pip-licenses
+        uv run pip-licenses --format=json --output-file=licenses.json || true
+
+    - name: Upload dependency reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: dependency-reports
+        path: |
+          licenses.json
+        retention-days: 7

@@ -1,0 +1,50 @@
+name: Claude Code On Issue Comment and Issue Creation
+ 
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+ 
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+ 
+      - name: Run Claude Code
+        id: claude
+        uses: anthropics/claude-code-action@v1
+        env:
+          # ANTHROPIC_BASE_URL: https://api.moonshot.cn/anthropic
+          ANTHROPIC_BASE_URL: https://open.bigmodel.cn/api/anthropic
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          track_progress: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            ISSUE NUMBER: ${{ github.event.issue.number }}
+            所有开发工作在 claude/dev-${{ github.event.issue.number }} 分支上进行。
+            请根据以下要求处理这个 issue：
+            - 如果是 issue_comment 事件，请分析评论内容并提供相关反馈。
+            - 如果是 issues 事件，请分析 issue 的标题和内容，以及分配情况，提供相关反馈。
+            - 重点关注问题的优先级、潜在影响和解决方案建议。
+            - 如果要求更多信息或澄清，请在 issue 下发表评论询问。
+            - 如果是有明确的开发任务，必须创建一个新的分支 claude/dev-${{ github.event.issue.number }}，并在该分支上进行开发。
+            请用简体中文回复。
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh issue:*),Bash(gh search:*),Bash(gh label:*),Bash(gh workflow:*),Bash(gh pr create:*)"

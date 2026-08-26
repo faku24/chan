@@ -1,0 +1,24 @@
+[package]
+name                    = "czsc-signal-macros"
+version.workspace       = true
+edition.workspace       = true
+license.workspace       = true
+repository.workspace    = true
+homepage.workspace      = true
+documentation.workspace = true
+authors.workspace       = true
+keywords.workspace      = true
+# proc-macro crate 用 development-tools 类目
+categories              = ["development-tools::procedural-macro-helpers"]
+readme                  = "README.md"
+description             = "Internal proc-macro of the czsc framework (普通用户请用 `czsc` facade): #[signal] / #[signal_module] for compile-time registration of CZSC signal functions."
+
+[lib]
+name       = "czsc_signal_macros"
+path       = "src/lib.rs"
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote       = "1"
+syn         = { version = "2", features = ["full", "parsing"] }
